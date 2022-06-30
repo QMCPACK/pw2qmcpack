@@ -10,6 +10,7 @@ on:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
     env:
       GH_JOBNAME: ${{ matrix.jobname }}
       GH_OS: Linux
@@ -17,6 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         jobname: [q-e-pw2qmcpack]
+
         include:
           - jobname: q-e-pw2qmcpack
             container:
