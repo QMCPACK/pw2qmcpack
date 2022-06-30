@@ -28,8 +28,8 @@ jobs:
       - name: Configure q-e
         run: |
           cd q-e
-          cmake -GNinja -DCMAKE_C_COMPILER=mpicc -DCMAKE_Fortran_COMPILER=mpif90 -DQE_ENABLE_PLUGINS=pw2qmcpack ..
+          cmake -DCMAKE_C_COMPILER=mpicc -DCMAKE_Fortran_COMPILER=mpif90 -DQE_ENABLE_PLUGINS=pw2qmcpack ..
 
       - name: Build q-e
         run: |
-          ninja
+          make -j
