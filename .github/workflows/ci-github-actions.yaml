@@ -1,12 +1,16 @@
 name: ci-qe
 
 on:
+  pull_request:
+    branches:
+      - main
   schedule:
     - cron: "15 3 * * *" # run at 3:15 AM UTC daily
 
 jobs:
   linux:
     runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
     env:
       GH_JOBNAME: ${{ matrix.jobname }}
       GH_OS: Linux
@@ -14,6 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         jobname: [q-e-pw2qmcpack]
+
         include:
           - jobname: q-e-pw2qmcpack
             container:
@@ -26,10 +31,13 @@ jobs:
           git clone --branch develop --depth 1 https://gitlab.com/QEF/q-e.git
 
       - name: Configure q-e
+        working-directory: ./q-e
         run: |
-          cd q-e
+          mkdir build
+          cd build 
           cmake -DCMAKE_C_COMPILER=mpicc -DCMAKE_Fortran_COMPILER=mpif90 -DQE_ENABLE_PLUGINS=pw2qmcpack ..
 
       - name: Build q-e
+        working-directory: ./q-e/build
         run: |
           make -j
