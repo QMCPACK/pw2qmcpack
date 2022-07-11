@@ -189,7 +189,11 @@ SUBROUTINE compute_qmcpack(write_psir, expand_kp, debug)
   use fft_interfaces,       ONLY : invfft, fwfft
   USE dfunct, ONLY : newd
   USE symm_base,            ONLY : nsym, s, ft
+#if defined(__fox)
   USE Fox_wxml
+#else
+  USE wxml
+#endif
 
   IMPLICIT NONE
   LOGICAL :: write_psir, expand_kp, debug
@@ -436,7 +440,8 @@ SUBROUTINE compute_qmcpack(write_psir, expand_kp, debug)
 
   tmp = TRIM( tmp_dir ) // TRIM( prefix )// '.ptcl.xml'
   CALL xml_OpenFile(filename = TRIM(tmp), XF = xmlfile, PRETTY_PRINT = .true., &
-                            REPLACE = .true., NAMESPACE = .true.)
+                            REPLACE = .true., NAMESPACE = .true., IOSTAT=ios)
+  IF ( ios/=0 ) CALL errore('pw2qmcpack', 'Failed to open/create '//TRIM(tmp), ABS(ios))
 
   CALL xml_NewElement(xmlfile, "qmcsystem")
     CALL xml_NewElement(xmlfile, "simulationcell")
@@ -600,7 +605,9 @@ SUBROUTINE compute_qmcpack(write_psir, expand_kp, debug)
    !  ENDIF
    tmp = TRIM( tmp_dir ) // TRIM( prefix )// '.wfs.xml'
   CALL xml_OpenFile(filename = TRIM(tmp), XF = xmlfile, PRETTY_PRINT = .true., &
-                            REPLACE = .true., NAMESPACE = .true.)
+                            REPLACE = .true., NAMESPACE = .true., IOSTAT=ios)
+  IF ( ios/=0 ) CALL errore('pw2qmcpack', 'Failed to open/create '//TRIM(tmp), ABS(ios))
+
   CALL xml_NewElement(xmlfile, "qmcsystem")
     ! <wavefunction name="psi0">
     CALL xml_NewElement(xmlfile, "wavefunction")

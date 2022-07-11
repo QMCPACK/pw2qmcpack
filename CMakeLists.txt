@@ -59,6 +59,7 @@ target_link_libraries(pw2qmcpack_exe
         qe_modules
         qe_fftx
         qe_upflib
+        qe_fox
         qe_xclib
         pw2qmcpack_esh5)
 
