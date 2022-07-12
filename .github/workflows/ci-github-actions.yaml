@@ -35,7 +35,7 @@ jobs:
         run: |
           mkdir build
           cd build 
-          cmake -DCMAKE_C_COMPILER=mpicc -DCMAKE_Fortran_COMPILER=mpif90 -DQE_ENABLE_PLUGINS=pw2qmcpack -DQE_ENABLE_FOX=ON ..
+          cmake -DCMAKE_C_COMPILER=mpicc -DCMAKE_Fortran_COMPILER=mpif90 -DQE_ENABLE_PLUGINS=pw2qmcpack ..
 
       - name: Build q-e
         working-directory: ./q-e/build
