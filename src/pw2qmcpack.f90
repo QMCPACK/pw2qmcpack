@@ -25,14 +25,14 @@ PROGRAM pw2qmcpack
   !
   IMPLICIT NONE
   INTEGER :: ios
-  LOGICAL :: write_psir, expand_kp, debug
+  LOGICAL :: write_psir, expand_kp, cusp_corr, debug
   REAL(DP) :: t1, t2, dt
   ! directory for temporary files
   CHARACTER(len=256) :: outdir
   !
   CHARACTER(LEN=256), EXTERNAL :: trimcheck
 
-  NAMELIST / inputpp / prefix, outdir, write_psir, expand_kp, debug
+  NAMELIST / inputpp / prefix, outdir, write_psir, expand_kp, cusp_corr, debug
 #ifdef __MPI
   CALL mp_startup ( )
 #endif
@@ -49,6 +49,7 @@ PROGRAM pw2qmcpack
   prefix = 'pwscf'
   write_psir = .false.
   expand_kp = .false.
+  cusp_corr = .false.
   debug = .false.
   CALL get_environment_variable( 'ESPRESSO_TMPDIR', outdir )
   IF ( TRIM( outdir ) == ' ' ) outdir = './'
@@ -70,6 +71,7 @@ PROGRAM pw2qmcpack
   CALL mp_bcast(tmp_dir, ionode_id, world_comm )
   CALL mp_bcast(write_psir, ionode_id, world_comm )
   CALL mp_bcast(expand_kp, ionode_id, world_comm )
+  CALL mp_bcast(cusp_corr, ionode_id, world_comm )
   CALL mp_bcast(debug, ionode_id, world_comm )
   !
   CALL start_clock ( 'read_file' )
@@ -86,7 +88,7 @@ PROGRAM pw2qmcpack
   CALL openfil_pp
   !
   CALL start_clock ( 'compute_qmcpack' )
-  CALL compute_qmcpack(write_psir, expand_kp, debug)
+  CALL compute_qmcpack(write_psir, expand_kp, cusp_corr, debug)
   CALL stop_clock ( 'compute_qmcpack' )
   !
   IF ( ionode ) THEN
@@ -160,12 +162,12 @@ SUBROUTINE check_norm(ng, eigvec, collect_intra_pool, jks, ibnd, tag)
   !
 END SUBROUTINE
 
-SUBROUTINE compute_qmcpack(write_psir, expand_kp, debug)
+SUBROUTINE compute_qmcpack(write_psir, expand_kp, cusp_corr, debug)
 
   USE kinds, ONLY: DP
   USE ions_base, ONLY : nat, ntyp => nsp, ityp, tau, zv, atm
   USE cell_base, ONLY: omega, alat, tpiba2, at, bg
-  USE constants, ONLY: tpi
+  USE constants, ONLY: tpi, pi
   USE run_info,  ONLY: title
   USE gvect, ONLY: ngm, ngm_g, g, ig_l2g
   USE klist , ONLY: nks, nelec, nelup, neldw, wk, xk, nkstot
@@ -196,12 +198,12 @@ SUBROUTINE compute_qmcpack(write_psir, expand_kp, debug)
 #endif
 
   IMPLICIT NONE
-  LOGICAL :: write_psir, expand_kp, debug
+  LOGICAL :: write_psir, expand_kp, cusp_corr, debug
   LOGICAL :: pool_ionode
   INTEGER :: ig, ibnd, ik, io, na, j, ispin, nbndup, nbnddown, &
        nk, ngtot, ig7, ikk, iks, kpcnt, jks, nt, ijkb0, ikb, ih, jh, jkb, at_num, &
        nelec_tot, nelec_up, nelec_down, ii, igx, igy, igz, n_rgrid(3), &
-       nkqs, nr1s,nr2s,nr3s
+       nkqs, nr1s,nr2s,nr3s,nrxxs, ng
   INTEGER, ALLOCATABLE :: indx(:), igtog(:), igtomin(:), g_global_to_local(:)
   LOGICAL :: exst, found
   REAL(DP) :: ek, eloc, enl, charge, etotefield
@@ -231,6 +233,9 @@ SUBROUTINE compute_qmcpack(write_psir, expand_kp, debug)
   REAL(DP) :: t1, t2, dt
   integer, allocatable :: rir(:)
   COMPLEX(DP), ALLOCATABLE :: tmp_evc(:)
+  COMPLEX(DP), ALLOCATABLE :: jastrow(:), temppsic(:)
+  REAL(DP) :: RS1,temp, arg, q2, norm
+  COMPLEX(DP) :: sf0,uep
 
   CHARACTER(256)          :: tmp, h5name, tmp_combo
 
@@ -320,6 +325,54 @@ SUBROUTINE compute_qmcpack(write_psir, expand_kp, debug)
   nr2s = dffts%nr2
   nr3s = dffts%nr3
   nxxs = dffts%nr1x * dffts%nr2x * dffts%nr3x
+  nrxxs= dffts%nnr ! dimension of allocated fft arrays local to this proc
+
+  ! YY: Construct RPA Jastrow following BOPIMC
+  if (cusp_corr) then
+    ! check that cusp correction can be applied
+    if (ntyp .ne. 1) then
+      CALL errore('pw2qmcpack', 'cusp correction requires a single type of ion, has ', ntyp)
+    endif
+
+    tmp = TRIM(atm(1))
+    if (atomic_number(tmp) .ne. zv(1)) then
+      CALL errore('pw2qmcpack', 'cusp correction require a full-core calculation')
+    endif
+    ! construct RPA e-I jastrow
+    RS1 = (3.0_DP*omega/(4.0_DP*pi*nelec))**(1.0_DP/3.0_DP)
+
+    if (ionode) then
+      write(stdout,*) '    Using cusp correction algorithm.'
+      write(stdout,'(a10,a5,a10,f10.6)') ' atom = ', tmp, ' charge = ', zv(1)
+      write(stdout,*) '    Constructing RPA Jastrow with RS = ', RS1
+    endif
+
+    ALLOCATE( jastrow(nrxxs) )
+    ALLOCATE( temppsic(nrxxs) )
+    jastrow(:)=(0.0_DP,0.0_DP)
+
+    ! Construct RPA Jastrow:
+    ! nls(i):       fft index of G vector-i
+    do ng = 1, ngm
+      q2 = sum( ( g(:,ng) )**2 )*tpiba2
+      IF(ABS(q2) < 0.000001d0) CYCLE
+      sf0 = (0.0_DP,0.0_DP)
+      do na = 1, nat
+        arg = (g (1, ng) * tau (1, na) + g (2, ng) * tau (2, na) &
+                 + g (3, ng) * tau (3, na) ) * tpi
+         sf0= sf0 + CMPLX(cos (arg), -sin (arg),kind=DP)
+      enddo
+      temp = 12.0_DP/(RS1*RS1*RS1*q2*q2)
+      uep = -zv(1)*0.5_DP*temp/SQRT(1.0_DP + temp)
+      jastrow(dffts%nl(ng)) = sf0 * uep / nelec
+    enddo
+    CALL invfft ('Wave', jastrow, dffts)
+    do ik=1,nrxxs
+      jastrow(ik)=CDEXP(-jastrow(ik))
+    enddo
+    ! Finished Construct RPA Jastrow
+  endif ! cusp_corr
+
   allocate (igk_sym( npwx ), g2kin_sym ( npwx ) )
 
   if (ionode) then
@@ -923,6 +976,40 @@ SUBROUTINE compute_qmcpack(write_psir, expand_kp, debug)
       if (debug) write(6,"(A,1I5)") "     collecting band ", ibnd
       CALL mp_sum ( eigpacked , intra_pool_comm )
       if (debug) write(6,"(A,1I5)") "        writing band ", ibnd
+      if (cusp_corr) then
+        ! put DFT orbitals in real space
+        psic(:)=(0.d0,0.d0)
+        psic(dffts%nl(igk_k(1:npw,ik)))=evc(1:npw,ibnd)
+        call invfft ('Wave', psic, dffts)
+
+        ! divide orbitals by RPA Jastrow
+        do ii=1,nrxxs
+          psic(ii) = psic(ii)/jastrow(ii)
+        enddo
+
+        ! Fourier transform to get new coefficients
+        call fwfft('Wave', psic, dffts)
+
+        ! only keep coefficients < wfc
+        temppsic(:) = (0.0_DP,0.0_DP)
+        temppsic(dffts%nl(igk_k(1:npw,ik)))=psic(dffts%nl(igk_k(1:npw,ik)))
+
+        ! renormalize
+        norm = 0.0_DP
+        do ii=1,npw
+          norm = norm + temppsic(dffts%nl(igk_k(ii,ik)))*CONJG(temppsic(dffts%nl(igk_k(ii,ik))))
+        enddo
+        IF(nproc_pool > 1) then
+          call mp_sum( norm, intra_pool_comm )
+        endif
+        norm = SQRT(norm)
+
+        psic(:) = (0.0_DP,0.0_DP)
+        psic(1:nrxxs) = temppsic(1:nrxxs)/norm
+
+        ! store new coefficients
+        eigpacked(igtomin(igk_k(1:npw,ik))) = psic(dffts%nl(igk_k(1:npw,ik)))
+      endif ! cusp_corr
       if (pool_ionode) THEN
         CALL check_norm(ngtot, eigpacked, .false., jks, ibnd, "after collection before writing")
         CALL esh5_write_psi_g(ibnd,eigpacked,ngtot)
